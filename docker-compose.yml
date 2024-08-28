@@ -1,0 +1,24 @@
+services:
+  tunmgr:
+    build:
+      context: .
+    image: ghcr.io/picosh/tunmgr:latest
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - $HOME/.ssh/id_ed25519_pico_antonio:/key:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+  httpbin:
+    image: kennethreitz/httpbin
+    depends_on:
+      tunmgr:
+        condition: service_healthy
+    # labels: # or provide tunnel names and ports explicitly
+    #   tunmgr.names: httpbin # Comma separated list of names. Can be an empty
+    #   tunmgr.ports: 80:80 $ Comma separated list of port maps. (remote:local)
+    command: gunicorn -b 0.0.0.0:80 httpbin:app -k gevent --access-logfile -
