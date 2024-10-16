@@ -446,7 +446,7 @@ func createSSHClient(remoteHost string, keyLocation string, keyPassphrase string
 	return sshClient
 }
 
-func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, networks []string) error {
+func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, networks []string, onlyLabels bool) error {
 	containerInfo, err := tunMgr.DockerClient.ContainerInspect(context.Background(), tunnelID)
 	if err != nil {
 		logger.Error(
@@ -480,8 +480,10 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 	)
 
 	exposedPorts := map[int]int{}
-	for port := range containerInfo.Config.ExposedPorts {
-		exposedPorts[port.Int()] = port.Int()
+	if !onlyLabels {
+		for port := range containerInfo.Config.ExposedPorts {
+			exposedPorts[port.Int()] = port.Int()
+		}
 	}
 
 	for netw := range maps.Keys(containerInfo.NetworkSettings.Networks) {
@@ -493,7 +495,7 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 				}
 				dnsNames = splitLabelNames
 				slices.Sort(dnsNames)
-			} else {
+			} else if !onlyLabels {
 				dnsNames = append(dnsNames, containerInfo.NetworkSettings.Networks[netw].DNSNames...)
 				slices.Sort(dnsNames)
 				dnsNames = slices.Compact(dnsNames)
@@ -534,7 +536,6 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 				"Exposed Ports",
 				slog.Any("exposed_ports", exposedPorts),
 			)
-
 			for remotePort, localPort := range exposedPorts {
 				for _, dnsName := range dnsNames {
 					var tunnelRemote string
@@ -590,6 +591,7 @@ func main() {
 	flag.Var(&tunnels, "tunnel", "Tunnel to initialize on setup. Can be provided multiple times, in the format of a -R tunnel for SSH.")
 
 	dockerEvents := flag.Bool("docker-events", true, "Whether or not to use docker events for setting up tunnels")
+	onlyLabels := flag.Bool("only-labels", false, "Whether or not to only use docker labels for setting up tunnels")
 	remoteLogs := flag.Bool("remote-logs", true, "Whether or not to print logs from the remote tunnels")
 
 	flag.Parse()
@@ -667,6 +669,21 @@ func main() {
 		loggerArgs...,
 	)
 
+	rootLogger.Debug(
+		"Flags",
+		"log_level", *logLevelFlag,
+		"networks", networks,
+		"remote_host", *remoteHostFlag,
+		"remote_hostname", *remoteHostnameFlag,
+		"remote_user", *remoteUserFlag,
+		"key_location", *keyLocationFlag,
+		"key_passphrase", *keyPassphraseFlag,
+		"tunnels", tunnels,
+		"docker_events", *dockerEvents,
+		"only_labels", *onlyLabels,
+		"remote_logs", *remoteLogs,
+	)
+
 	tunMgr := NewTunMgr(dockerClient, sshClient)
 
 	go tunMgr.WatchDog()
@@ -739,7 +756,7 @@ func main() {
 			}
 
 			for _, container := range containers {
-				err := handleContainerStart(tunMgr, rootLogger, container.ID, networks)
+				err := handleContainerStart(tunMgr, rootLogger, container.ID, networks, *onlyLabels)
 				if err != nil {
 					rootLogger.Error(
 						"Unable to add tunnels for container",
@@ -763,7 +780,7 @@ func main() {
 						switch event.Action {
 						case events.ActionStart:
 							logger.Info("Received start")
-							err := handleContainerStart(tunMgr, logger, event.Actor.ID, networks)
+							err := handleContainerStart(tunMgr, logger, event.Actor.ID, networks, *onlyLabels)
 							if err != nil {
 								logger.Error(
 									"Unable to add tunnels for container",
