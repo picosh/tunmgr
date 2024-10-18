@@ -10,7 +10,7 @@ You can also disable the docker based system by setting `-docker-events=false`. 
 
 ## Arguments
 
-```bash
+```text
 Usage of tunmgr:
   -command string
         The command to run for the remote session
