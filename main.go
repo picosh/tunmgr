@@ -137,7 +137,7 @@ type forwardedTCPPayload struct {
 	OriginPort uint32
 }
 
-func (m *TunMgr) AddTunnel(tunnelID string, remoteAddr string, localAddr string) (string, error) {
+func (m *TunMgr) AddTunnel(tunnelID, remoteAddr, localAddr string) (string, error) {
 	tunHandlers, _ := m.Tunnels.LoadOrStore(tunnelID, syncmap.New[string, *TunHandler]())
 
 	var remoteHost string
@@ -204,10 +204,10 @@ func (m *TunMgr) WatchDog() {
 	panic(err)
 }
 
-func (m *TunMgr) HandleLogs() {
+func (m *TunMgr) Start(attachLogs bool, command string) {
 	session, err := m.SSHClient.NewSession()
 	if err != nil {
-		slog.Error("Unable to handle logs, setup session failed", slog.Any("error", err))
+		slog.Error("Unable to start, setup session failed", slog.Any("error", err))
 		return
 	}
 
@@ -216,17 +216,24 @@ func (m *TunMgr) HandleLogs() {
 	session.Stderr = w
 	session.Stdout = w
 
-	err = session.Shell()
+	if command == "" {
+		err = session.Shell()
+	} else {
+		err = session.Run(command)
+	}
+
 	if err != nil {
 		slog.Error("Unable to handle logs, run shell failed", slog.Any("error", err))
 		return
 	}
 
-	_, err = io.Copy(os.Stdout, r)
-	if err != nil {
-		slog.Error("Unable to handle logs, copy to stdout failed", slog.Any("error", err))
-		return
-	}
+	go func() {
+		_, err = io.Copy(os.Stdout, r)
+		if err != nil {
+			slog.Error("Unable to handle logs, copy to stdout failed", slog.Any("error", err))
+			return
+		}
+	}()
 }
 
 func (m *TunMgr) HandleChannels() {
@@ -479,10 +486,10 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 		slog.Any("exposed_ports", containerInfo.Config.ExposedPorts),
 	)
 
-	exposedPorts := map[int]int{}
+	var exposedPorts [][]string
 	if !onlyLabels {
 		for port := range containerInfo.Config.ExposedPorts {
-			exposedPorts[port.Int()] = port.Int()
+			exposedPorts = append(exposedPorts, []string{fmt.Sprintf("%d", port.Int()), fmt.Sprintf("%d", port.Int())})
 		}
 	}
 
@@ -495,7 +502,9 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 				}
 				dnsNames = splitLabelNames
 				slices.Sort(dnsNames)
-			} else if !onlyLabels {
+			}
+
+			if !onlyLabels {
 				dnsNames = append(dnsNames, containerInfo.NetworkSettings.Networks[netw].DNSNames...)
 				slices.Sort(dnsNames)
 				dnsNames = slices.Compact(dnsNames)
@@ -507,27 +516,11 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 			)
 
 			if labelPorts, ok := containerInfo.Config.Labels["tunmgr.ports"]; ok {
-				labelExposedPorts := map[int]int{}
+				var labelExposedPorts [][]string
 				splitLabelPorts := strings.Split(labelPorts, ",")
 				for _, v := range splitLabelPorts {
 					splitPort := strings.SplitN(v, ":", 2)
-					if len(splitPort) != 2 {
-						logger.Debug("Unable to split port into remote:local", slog.Any("label_port", v))
-						continue
-					}
-					remotePort, err := strconv.Atoi(splitPort[0])
-					if err != nil {
-						logger.Debug("Unable to parse remote port", slog.Any("label_port", v), slog.Any("error", err))
-						continue
-					}
-
-					localPort, err := strconv.Atoi(splitPort[1])
-					if err != nil {
-						logger.Debug("Unable to parse local port", slog.Any("label_port", v), slog.Any("error", err))
-						continue
-					}
-
-					labelExposedPorts[remotePort] = localPort
+					labelExposedPorts = append(labelExposedPorts, []string{splitPort[0], splitPort[1]})
 				}
 				exposedPorts = labelExposedPorts
 			}
@@ -536,17 +529,20 @@ func handleContainerStart(tunMgr *TunMgr, logger *slog.Logger, tunnelID string, 
 				"Exposed Ports",
 				slog.Any("exposed_ports", exposedPorts),
 			)
-			for remotePort, localPort := range exposedPorts {
+			for _, portInfo := range exposedPorts {
+				remotePort := portInfo[0]
+				localPort := portInfo[1]
+
 				for _, dnsName := range dnsNames {
 					var tunnelRemote string
 
 					if dnsName != "" {
-						tunnelRemote = fmt.Sprintf("%s:%d", dnsName, remotePort)
+						tunnelRemote = fmt.Sprintf("%s:%s", dnsName, remotePort)
 					} else {
-						tunnelRemote = fmt.Sprintf("%d", remotePort)
+						tunnelRemote = remotePort
 					}
 
-					tunnelLocal := fmt.Sprintf("%s:%d", containerInfo.NetworkSettings.Networks[netw].IPAddress, localPort)
+					tunnelLocal := fmt.Sprintf("%s:%s", containerInfo.NetworkSettings.Networks[netw].IPAddress, localPort)
 
 					logger.Info(
 						"Adding tunnel",
@@ -585,10 +581,13 @@ func main() {
 	remoteUserFlag := flag.String("remote-user", "", "The remote user to connect as")
 	keyLocationFlag := flag.String("remote-key-location", "/key", "The location on the filesystem of where to access the ssh key")
 	keyPassphraseFlag := flag.String("remote-key-passphrase", "", "The passphrase for an encrypted ssh key")
+	command := flag.String("command", "", "The command to run for the remote session")
 
 	var tunnels sliceFlags
+	var localTunnels sliceFlags
 
 	flag.Var(&tunnels, "tunnel", "Tunnel to initialize on setup. Can be provided multiple times, in the format of a -R tunnel for SSH.")
+	flag.Var(&localTunnels, "local-tunnel", "Tunnel to initialize on setup. Can be provided multiple times, in the format of a -L tunnel for SSH.")
 
 	dockerEvents := flag.Bool("docker-events", true, "Whether or not to use docker events for setting up tunnels")
 	onlyLabels := flag.Bool("only-labels", false, "Whether or not to only use docker labels for setting up tunnels")
@@ -679,17 +678,19 @@ func main() {
 		"key_location", *keyLocationFlag,
 		"key_passphrase", *keyPassphraseFlag,
 		"tunnels", tunnels,
+		"local-tunnels", localTunnels,
 		"docker_events", *dockerEvents,
 		"only_labels", *onlyLabels,
 		"remote_logs", *remoteLogs,
+		"command", *command,
 	)
 
 	tunMgr := NewTunMgr(dockerClient, sshClient)
 
 	go tunMgr.WatchDog()
 
-	if *remoteLogs {
-		go tunMgr.HandleLogs()
+	if *remoteLogs || *command != "" {
+		tunMgr.Start(*remoteLogs, *command)
 	}
 
 	go tunMgr.HandleChannels()
@@ -709,6 +710,7 @@ func main() {
 		tunnelInfo := strings.Split(tunnel, ":")
 
 		if len(tunnelInfo) < 3 {
+			rootLogger.Info("Unable to add tunnel", slog.String("remote", tunnel))
 			continue
 		}
 
@@ -739,6 +741,89 @@ func main() {
 			"Remote addr",
 			slog.String("remote_addr", remoteAddr),
 		)
+	}
+
+	for _, localTunnel := range localTunnels {
+		tunnelInfo := strings.SplitN(localTunnel, ":", 4)
+
+		if len(tunnelInfo) < 3 {
+			rootLogger.Info("Unable to add local tunnel", slog.String("local", localTunnel))
+			continue
+		}
+
+		tunnelLocal := tunnelInfo[0]
+		if len(tunnelInfo) == 4 {
+			tunnelLocal += fmt.Sprintf(":%s", tunnelInfo[1])
+		}
+
+		tunnelRemote := fmt.Sprintf("%s:%s", tunnelInfo[len(tunnelInfo)-2], tunnelInfo[len(tunnelInfo)-1])
+
+		rootLogger.Info(
+			"Adding local tunnel",
+			slog.String("remote", tunnelRemote),
+			slog.String("local", tunnelLocal),
+		)
+
+		go func() {
+			l, err := net.Listen("tcp", tunnelLocal)
+			if err != nil {
+				rootLogger.Error(
+					"Unable to start local tunnel",
+					slog.String("remote", tunnelRemote),
+					slog.String("local", tunnelLocal),
+					slog.Any("error", err),
+				)
+				panic(err)
+			}
+
+			defer l.Close()
+
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					rootLogger.Error(
+						"Unable to start local tunnel",
+						slog.String("remote", tunnelRemote),
+						slog.String("local", tunnelLocal),
+						slog.Any("error", err),
+					)
+					break
+				}
+
+				go func() {
+					defer conn.Close()
+
+					conn2, err := sshClient.Dial("tcp", tunnelRemote)
+					if err != nil {
+						rootLogger.Error(
+							"Unable to start local tunnel",
+							slog.String("remote", tunnelRemote),
+							slog.String("local", tunnelLocal),
+							slog.Any("error", err),
+						)
+						return
+					}
+
+					defer conn2.Close()
+
+					var wg sync.WaitGroup
+
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						io.Copy(conn, conn2)
+					}()
+
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						io.Copy(conn2, conn)
+					}()
+
+					wg.Wait()
+				}()
+			}
+		}()
 	}
 
 	if dockerClient != nil {
