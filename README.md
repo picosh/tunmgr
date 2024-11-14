@@ -77,3 +77,5 @@ Auto tunnels will be established for:
 1. [https://antonio-ce37a3511391.tuns.sh](https://tuns.sh)
 2. [https://antonio-httpbin.tuns.sh](https://tuns.sh)
 3. [https://antonio-tunmgr-httpbin-1.tuns.sh](https://tuns.sh)
+
+See also the `examples` folder of this repo.

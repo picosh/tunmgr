@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunmgr
+  labels:
+    app.kubernetes.io/name: tunmgr
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  strategy:
+    # tuns.sh doesn't enable load balancing https://docs.ssi.sh/advanced#load-balancing
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tunmgr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tunmgr
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: tunmgr
+          image: ghcr.io/picosh/tunmgr:latest
+          imagePullPolicy: Always
+          args:
+            - -docker-events=false
+            - -remote-key-location=/key/id_ed25519
+            # Add your own args
+          volumeMounts:
+          - name: ssh-key
+            mountPath: /key
+            readOnly: true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # Tunmgr binds to localhost so this probe won't work
+          # readinessProbe:
+          #   httpGet:
+          #     path: /health
+          #     port: http
+          #   initialDelaySeconds: 1
+          #   failureThreshold: 3
+          #   timeoutSeconds: 1
+          #   periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 50Mi
+            limits:
+              memory: 200Mi
+              ephemeral-storage: 100Mi
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+      - name: ssh-key
+        secret:
+          secretName: ssh-key
+          defaultMode: 0400

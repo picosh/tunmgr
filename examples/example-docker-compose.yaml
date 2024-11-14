@@ -1,0 +1,27 @@
+services:
+  tunmgr:
+    image: ghcr.io/picosh/tunmgr:latest
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - $HOME/.ssh/id_ed25519_pico_antonio:/key:ro
+    # ports: # Ports map for local tunnels like below
+    #   - 8000:8000
+    # command: | # Provide other commands below
+    #   -only-labels=true
+    #   -local-tunnel=0.0.0.0:8000:antonio-httpbin:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+  httpbin:
+    image: kennethreitz/httpbin
+    depends_on:
+      tunmgr:
+        condition: service_healthy
+    # labels: # or provide tunnel names and ports explicitly
+    #   tunmgr.names: httpbin # Comma separated list of names. Can be an empty. If empty, allows for tcp forward (or random name).
+    #   tunmgr.ports: 8000:80,80:80 # Comma separated list of port maps. (remote:local). First is alias, second is http.
+    command: gunicorn -b 0.0.0.0:80 httpbin:app -k gevent --access-logfile -
